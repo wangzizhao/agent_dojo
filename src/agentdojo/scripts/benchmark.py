@@ -246,7 +246,14 @@ def evaluate_model_sequentially():
     for llm_name in vllm_models:
         loaded_lora_module_names = start_vllm(vllm_config, llm_name)
 
-        short_llm_name = llm_name.split("/")[1]
+        if "pretrained" in llm_name or "imitation" in llm_name:
+            short_llm_name = llm_name.split("/")[1]
+        elif "rl" in llm_name:
+            exp_name = llm_name.split("/")[1]
+            iter_name = llm_name.split("/")[-1]
+            short_llm_name = f"{exp_name}/{iter_name}"
+        else:
+            raise ValueError(f"Unknown model name: {llm_name}")
         main(
             suites=tuple(),
             model=ModelsEnum.LOCAL,
