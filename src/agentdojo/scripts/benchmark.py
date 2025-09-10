@@ -1,6 +1,8 @@
 import importlib
 import logging
+import os
 import warnings
+from dataclasses import dataclass
 from itertools import repeat
 from multiprocessing import Pool
 from pathlib import Path
@@ -20,12 +22,13 @@ from agentdojo.models import ModelsEnum
 from agentdojo.task_suite.load_suites import get_suite, get_suites
 from agentdojo.task_suite.task_suite import TaskSuite
 
+from agentdojo.scripts.vllm_utils import start_vllm, unload_lora_modules
+
 
 def benchmark_suite(
-    suite: TaskSuite,
+    suite_name: str,
     model: ModelsEnum,
     logdir: Path,
-    force_rerun: bool,
     benchmark_version: str,
     user_tasks: tuple[str, ...] = (),
     injection_tasks: tuple[str, ...] = (),
@@ -35,11 +38,14 @@ def benchmark_suite(
     tool_delimiter: str = "tool",
     system_message_name: str | None = None,
     system_message: str | None = None,
+    force_rerun: bool = False,
     live: Live | None = None,
     tool_output_format: Literal["yaml", "json"] | None = None,
 ) -> SuiteResults:
     if not load_dotenv(".env"):
         warnings.warn("No .env file found")
+
+    suite = get_suite(benchmark_version, suite_name)
 
     print(f"Running benchmark for suite: '{suite.name}'")
     print(f"Using model: '{model}'")
@@ -105,109 +111,6 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
         print(f"Average security: {avg_security * 100:.2f}%")
 
 
-@click.command()
-@click.option(
-    "--model",
-    default="gpt-4o-2024-05-13",
-    type=click.Choice([value for value in ModelsEnum]),
-    help="The language model to benchmark. Defaults to `gpt-4o-2024-05-13`.",
-)
-@click.option(
-    "--model-id",
-    type=str,
-    default=None,
-    help="The model id for local models.",
-)
-@click.option(
-    "--benchmark-version",
-    default="v1.2.1",
-    type=str,
-    help="The version of the benchmark to run. Defaults to `v1.2`.",
-)
-@click.option(
-    "--tool-delimiter",
-    type=str,
-    default="tool",
-    help="Which tool delimiter to use. Used for local models only.",
-)
-@click.option(
-    "--logdir",
-    default="./runs",
-    type=Path,
-    help="The directory to save logs. Defaults to `./runs`.",
-)
-@click.option(
-    "--attack",
-    type=str,
-    default=None,
-    help=f"The attack to use. `None` by default. It should be one of {ATTACKS}, or a custom attack defined and registered in of of the `--module-to-load`. If `None`, no attack is used.",
-)
-@click.option(
-    "--defense",
-    type=click.Choice(DEFENSES),
-    default=None,
-    help="The defense to use. `None` by default.",
-)
-@click.option(
-    "--system-message-name",
-    type=str,
-    default=None,
-    help="The name of the system message to use among the default ones in `data/system_messages.yaml`.",
-)
-@click.option(
-    "--system-message",
-    type=str,
-    default=None,
-    help="The system message to use (as a string). If provided, `--system-message-name` is ignored.",
-)
-@click.option(
-    "--user-task",
-    "-ut",
-    "user_tasks",
-    type=str,
-    multiple=True,
-    default=tuple(),
-    help="The user tasks to benchmark. If not provided, all tasks in the suite are run.",
-)
-@click.option(
-    "--injection-task",
-    "-it",
-    "injection_tasks",
-    type=str,
-    multiple=True,
-    default=tuple(),
-    help="The user tasks to benchmark. If not provided, all tasks in the suite are run.",
-)
-@click.option(
-    "--suite",
-    "-s",
-    "suites",
-    type=str,
-    multiple=True,
-    default=tuple(),
-    help="The user tasks to benchmark. If not provided, all tasks in the suite are run.",
-)
-@click.option(
-    "--max-workers",
-    type=int,
-    default=1,
-    help="How many suites can be benchmarked in parallel through multithreading. Nothing is parallelized by default.",
-)
-@click.option(
-    "--force-rerun",
-    "-f",
-    is_flag=True,
-    help="Whether to re-run tasks that have already been run.",
-)
-@click.option(
-    "--module-to-load",
-    "-ml",
-    "modules_to_load",
-    type=str,
-    multiple=True,
-    default=tuple(),
-    help="The modules to load before running the benchmark. Useful for registering custom attacks, defenses, or suites.",
-)
 def main(
     suites: tuple[str, ...],
     model: ModelsEnum,
@@ -240,9 +143,8 @@ def main(
     if max_workers == 1:
         results = {}
         for suite_name in suites:
-            suite = get_suite(benchmark_version, suite_name)
             results[suite_name] = benchmark_suite(
-                suite,
+                suite_name,
                 model,
                 logdir,
                 benchmark_version=benchmark_version,
@@ -275,27 +177,88 @@ def main(
                     "injection_tasks_utility_results"
                 ][injection_task]
         show_results("combined", combined_results, attack is not None)
-        exit(0)
+    else:
+        with Pool(max_workers) as p:
+            arguments = zip(
+                suites,
+                repeat(model),
+                repeat(logdir),
+                repeat(benchmark_version),
+                repeat(user_tasks),
+                repeat(injection_tasks),
+                repeat(model_id),
+                repeat(attack),
+                repeat(defense),
+                repeat(tool_delimiter),
+                repeat(system_message_name),
+                repeat(system_message),
+                repeat(force_rerun),
+            )
+            results = p.starmap(benchmark_suite, arguments)
 
-    with Pool(max_workers) as p:
-        arguments = zip(
-            suites,
-            repeat(model),
-            repeat(logdir),
-            repeat(user_tasks),
-            repeat(injection_tasks),
-            repeat(model_id),
-            repeat(attack),
-            repeat(defense),
-            repeat(tool_delimiter),
-            repeat(system_message_name),
-            repeat(system_message),
-            repeat(force_rerun),
+        for suite_name, result in zip(suites, results):
+            show_results(suite_name, result, attack is not None)
+
+
+@dataclass
+class VllmConfig:
+    host: str = "localhost"
+    port: int = 8000
+    api_key: str = "EMPTY"
+    max_model_len: int = 32768
+
+    session_name: str ="vllm_server"
+
+    model_path_base: Path = Path.home() / "spag_optim"
+
+    def __post_init__(self):
+        self.url = f"http://{self.host}:{self.port}"
+
+    def to_string_list(self):
+        # helper function to gather commands for launching vLLM server
+        return [
+            "--host", self.host,
+            "--port", self.port,
+            "--api-key", self.api_key,
+            "--max-model-len", str(self.max_model_len),
+            "--gpu-memory-utilization", "0.9",
+            "--generation-config", "auto",              # use vllm's generation config
+            "--model-impl", "vllm",
+        ]
+
+
+def evaluate_model_sequentially():
+
+    # vllm server variables
+    vllm_config = VllmConfig()
+    os.environ["LOCAL_LLM_PORT"] = str(vllm_config.port)
+
+    # if the model path has iteration checkpoints, add all of them to vllms
+    vllm_models = [
+        # "pretrained/gemma-3-12b-it",
+        # "imitation/gemma-3-12b-it-agent-lora_r_128_alpha_256_modules_all-linear",
+        "grpo_general_prompt/grpo_gemma_3_12b_it_self_play_agent_population_attacker_iterative_use_sampling_iw_kl_0.05_clip_0.1_0.3_group_normalization/rl/iter_10",
+        # "grpo_general_prompt/grpo_gemma_3_12b_it_agent_iterative_attacker_iterative_use_sampling_iw_kl_0.05_clip_0.1_0.3_group_normalization/rl/agent/iter_10",
+        # "grpo_general_prompt/grpo_gemma_3_12b_it_agent_population_attacker_iterative_use_sampling_iw_kl_0.05_clip_0.1_0.3_group_normalization_asymmetric_kl/rl/agent/iter_10",
+    ]
+
+    # start evaluation
+    for llm_name in vllm_models:
+        loaded_lora_module_names = start_vllm(vllm_config, llm_name)
+
+        short_llm_name = llm_name.split("/")[1]
+        main(
+            suites=tuple(),
+            model=ModelsEnum.LOCAL,
+            benchmark_version="v1.2.1",
+            model_id=str(vllm_config.model_path_base / llm_name),
+            attack="tool_knowledge",
+            defense=None,
+            tool_delimiter="user",
+            max_workers=32,
+            logdir=Path("./runs") / short_llm_name,
         )
-        results = p.starmap(benchmark_suite, arguments)
-
-    for suite_name, result in zip(suites, results):
-        show_results(suite_name, result, attack is not None)
+        unload_lora_modules(vllm_config.url, vllm_config.api_key, loaded_lora_module_names)
 
 
 if __name__ == "__main__":
@@ -306,4 +269,4 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
         handlers=[RichHandler(show_path=False, markup=True)],
     )
-    main()
+    evaluate_model_sequentially()
