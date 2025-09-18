@@ -95,27 +95,30 @@ def benchmark_suite(
 
 
 def show_results(log_fname: Path, suite_name: str, results: SuiteResults, show_security_results: bool):
-    utility_results = results["utility_results"].values()
-    avg_utility = sum(utility_results) / len(utility_results)
+    utility_values = list(results["utility_results"].values())
+    avg_utility = (sum(utility_values) / len(utility_values)) if len(utility_values) > 0 else 0.0
 
-    lines: list[str] = []
-    lines.append(f"Results for suite {suite_name}")
-    lines.append(f"Average utility: {avg_utility * 100:.2f}%")
+    payload: dict = {
+        "suite_name": suite_name,
+        "average_utility": avg_utility,
+    }
 
     if show_security_results:
-        passed_injection_tasks = sum(results["injection_tasks_utility_results"].values())
-        total_injection_tasks = len(results["injection_tasks_utility_results"])
-        lines.append(f"Passed injection tasks as user tasks: {passed_injection_tasks}/{total_injection_tasks}")
-
-        security_results = results["security_results"].values()
-        avg_security = sum(security_results) / len(security_results)
-        lines.append(f"Average security: {avg_security * 100:.2f}%")
-
-    lines.append("")
+        passed_injection_tasks = int(sum(results["injection_tasks_utility_results"].values()))
+        total_injection_tasks = int(len(results["injection_tasks_utility_results"]))
+        security_values = list(results["security_results"].values())
+        avg_security = (sum(security_values) / len(security_values)) if len(security_values) > 0 else 0.0
+        payload.update(
+            {
+                "passed_injection_tasks": passed_injection_tasks,
+                "total_injection_tasks": total_injection_tasks,
+                "average_security": avg_security,
+            }
+        )
 
     log_fname.parent.mkdir(parents=True, exist_ok=True)
     with open(log_fname, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def main(
@@ -186,7 +189,7 @@ def main(
         results = {suite_name: result for suite_name, result in zip(suites, results)}
 
     combined_results = SuiteResults(utility_results={}, security_results={}, injection_tasks_utility_results={})
-    results_log = logdir / f"attack_{'none' if attack is None else attack}_results.txt"
+    results_log = logdir / f"attack_{'none' if attack is None else attack}_results.json"
     for suite_name, result in results.items():
         show_results(results_log, suite_name, result, attack is not None)
         for user_task, injection_task in result["utility_results"]:
