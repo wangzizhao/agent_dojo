@@ -94,21 +94,28 @@ def benchmark_suite(
     return results
 
 
-def show_results(suite_name: str, results: SuiteResults, show_security_results: bool):
+def show_results(log_fname: Path, suite_name: str, results: SuiteResults, show_security_results: bool):
     utility_results = results["utility_results"].values()
     avg_utility = sum(utility_results) / len(utility_results)
 
-    print(f"Results for suite {suite_name}")
-    print(f"Average utility: {avg_utility * 100:.2f}%")
+    lines: list[str] = []
+    lines.append(f"Results for suite {suite_name}")
+    lines.append(f"Average utility: {avg_utility * 100:.2f}%")
 
     if show_security_results:
         passed_injection_tasks = sum(results["injection_tasks_utility_results"].values())
         total_injection_tasks = len(results["injection_tasks_utility_results"])
-        print(f"\nPassed injection tasks as user tasks: {passed_injection_tasks}/{total_injection_tasks}")
+        lines.append(f"Passed injection tasks as user tasks: {passed_injection_tasks}/{total_injection_tasks}")
 
         security_results = results["security_results"].values()
         avg_security = sum(security_results) / len(security_results)
-        print(f"Average security: {avg_security * 100:.2f}%")
+        lines.append(f"Average security: {avg_security * 100:.2f}%")
+
+    lines.append("")
+
+    log_fname.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_fname, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def main(
@@ -158,25 +165,6 @@ def main(
                 system_message=system_message,
                 force_rerun=force_rerun,
             )
-        combined_results = SuiteResults(utility_results={}, security_results={}, injection_tasks_utility_results={})
-        for suite_name, result in results.items():
-            show_results(suite_name, result, attack is not None)
-            for user_task, injection_task in result["utility_results"]:
-                new_user_task = suite_name + "_" + user_task
-                combined_results["utility_results"][(new_user_task, injection_task)] = result["utility_results"][
-                    (user_task, injection_task)
-                ]
-            for user_task, injection_task in result["security_results"]:
-                new_user_task = suite_name + "_" + user_task
-                combined_results["security_results"][(new_user_task, injection_task)] = result["security_results"][
-                    (user_task, injection_task)
-                ]
-            for injection_task in result["injection_tasks_utility_results"]:
-                new_injection_task = suite_name + "_" + injection_task
-                combined_results["injection_tasks_utility_results"][new_injection_task] = result[
-                    "injection_tasks_utility_results"
-                ][injection_task]
-        show_results("combined", combined_results, attack is not None)
     else:
         with Pool(max_workers) as p:
             arguments = zip(
@@ -195,9 +183,28 @@ def main(
                 repeat(force_rerun),
             )
             results = p.starmap(benchmark_suite, arguments)
+        results = {suite_name: result for suite_name, result in zip(suites, results)}
 
-        for suite_name, result in zip(suites, results):
-            show_results(suite_name, result, attack is not None)
+    combined_results = SuiteResults(utility_results={}, security_results={}, injection_tasks_utility_results={})
+    results_log = logdir / f"attack_{'none' if attack is None else attack}_results.txt"
+    for suite_name, result in results.items():
+        show_results(results_log, suite_name, result, attack is not None)
+        for user_task, injection_task in result["utility_results"]:
+            new_user_task = suite_name + "_" + user_task
+            combined_results["utility_results"][(new_user_task, injection_task)] = result["utility_results"][
+                (user_task, injection_task)
+            ]
+        for user_task, injection_task in result["security_results"]:
+            new_user_task = suite_name + "_" + user_task
+            combined_results["security_results"][(new_user_task, injection_task)] = result["security_results"][
+                (user_task, injection_task)
+            ]
+        for injection_task in result["injection_tasks_utility_results"]:
+            new_injection_task = suite_name + "_" + injection_task
+            combined_results["injection_tasks_utility_results"][new_injection_task] = result[
+                "injection_tasks_utility_results"
+            ][injection_task]
+    show_results(results_log, "combined", combined_results, attack is not None)
 
 
 @dataclass
@@ -209,7 +216,7 @@ class VllmConfig:
 
     session_name: str ="vllm_server"
 
-    model_path_base: Path = Path.home() / "spag_optim"
+    model_path_base: Path = Path.home() / "spag_ckpt"
 
     def __post_init__(self):
         self.url = f"http://{self.host}:{self.port}"
@@ -233,17 +240,44 @@ def evaluate_model_sequentially():
     vllm_config = VllmConfig()
     os.environ["LOCAL_LLM_PORT"] = str(vllm_config.port)
 
+    log_path = Path.home() / "bucket" / "agentdojo"
+
     # if the model path has iteration checkpoints, add all of them to vllms
     vllm_models = [
-        # "pretrained/gemma-3-12b-it",
-        # "imitation/gemma-3-12b-it-agent-lora_r_128_alpha_256_modules_all-linear",
-        "grpo_general_prompt/grpo_gemma_3_12b_it_self_play_agent_population_attacker_iterative_use_sampling_iw_kl_0.05_clip_0.1_0.3_group_normalization/rl/iter_10",
-        # "grpo_general_prompt/grpo_gemma_3_12b_it_agent_iterative_attacker_iterative_use_sampling_iw_kl_0.05_clip_0.1_0.3_group_normalization/rl/agent/iter_10",
-        # "grpo_general_prompt/grpo_gemma_3_12b_it_agent_population_attacker_iterative_use_sampling_iw_kl_0.05_clip_0.1_0.3_group_normalization_asymmetric_kl/rl/agent/iter_10",
+        "pretrained/gemma-3-12b-it",
+        "pretrained/qwen3-14b",
+        "imitation/gemma-3-12b-it-both",
+        "imitation/qwen3-14b-both",
     ]
+    exp_base_path = "iclr_exp"
+    for exp_name in [
+        "grpo_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
+        "grpo_gemma_3_12b_it_self_play_agent_population_attacker_iterative",
+        "grpo_gemma_3_12b_it_agent_iterative",
+        "grpo_gemma_3_12b_it_art_agent_iterative",
+        "spag_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
+        "grpo_qwen3_14b_self_play_agent_population_attacker_iterative",
+    ]:
+        for seed in [0, 1, 2]:
+            for iteration in [5, 10, 15, 20]:
+                llm_name_candidate1 = f"{exp_base_path}/{exp_name}_seed_{seed}/rl/agent/iter_{iteration}"
+                llm_name_candidate2 = f"{exp_base_path}/{exp_name}_seed_{seed}/rl/iter_{iteration}"
+                if (vllm_config.model_path_base / llm_name_candidate1).exists():
+                    vllm_models.append(llm_name_candidate1)
+                elif (vllm_config.model_path_base / llm_name_candidate2).exists():
+                    vllm_models.append(llm_name_candidate2)
+                else:
+                    continue
 
     # start evaluation
     for llm_name in vllm_models:
+        if "qwen" in llm_name:
+            vllm_config.max_model_len = 40960
+        elif "gemma" in llm_name:
+            vllm_config.max_model_len = 128000
+        else:
+            raise ValueError(f"Unknown model name: {llm_name}")
+
         loaded_lora_module_names = start_vllm(vllm_config, llm_name)
 
         if "pretrained" in llm_name or "imitation" in llm_name:
@@ -254,17 +288,19 @@ def evaluate_model_sequentially():
             short_llm_name = f"{exp_name}/{iter_name}"
         else:
             raise ValueError(f"Unknown model name: {llm_name}")
-        main(
-            suites=tuple(),
-            model=ModelsEnum.LOCAL,
-            benchmark_version="v1.2.1",
-            model_id=str(vllm_config.model_path_base / llm_name),
-            attack="tool_knowledge",
-            defense=None,
-            tool_delimiter="user",
-            max_workers=32,
-            logdir=Path("./runs") / short_llm_name,
-        )
+
+        for attack in [None, "tool_knowledge", "important_instructions"]:
+            main(
+                suites=tuple(),
+                model=ModelsEnum.LOCAL,
+                benchmark_version="v1.2.1",
+                model_id=str(vllm_config.model_path_base / llm_name),
+                attack=attack,
+                defense=None,
+                tool_delimiter="user",
+                max_workers=32,
+                logdir=log_path / exp_base_path / short_llm_name,
+            )
         unload_lora_modules(vllm_config.url, vllm_config.api_key, loaded_lora_module_names)
 
 
