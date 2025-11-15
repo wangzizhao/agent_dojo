@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import repeat
 from multiprocessing import Pool
 from pathlib import Path
@@ -190,7 +190,7 @@ def main(
         results = {suite_name: result for suite_name, result in zip(suites, results)}
 
     combined_results = SuiteResults(utility_results={}, security_results={}, injection_tasks_utility_results={})
-    results_log = logdir / f"attack_{'none' if attack is None else attack}_results.json"
+    results_log = logdir / f"attack_{'none' if attack is None else attack}_defense_{'none' if defense is None else defense}_results.json"
     for suite_name, result in results.items():
         show_results(results_log, suite_name, result, attack is not None)
         for user_task, injection_task in result["utility_results"]:
@@ -237,32 +237,71 @@ class VllmConfig:
             "--model-impl", "vllm",
         ]
 
+@dataclass
+class EvalConfig:
+    base_models: list[str] = field(
+        default_factory=lambda: [
+            "pretrained/gemma-3-12b-it",
+            # "pretrained/qwen3-14b",
+        ],
+    )
+    exp_models: list[str] = field(
+        default_factory=lambda: [
+            # "iclr_exp/grpo_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
+            # "iclr_exp/grpo_gemma_3_12b_it_self_play_agent_population_attacker_iterative",
+            # "iclr_exp/grpo_gemma_3_12b_it_agent_iterative",
+            # "iclr_exp/grpo_gemma_3_12b_it_art_agent_iterative",
+            # "iclr_exp/spag_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
+            # "iclr_exp/grpo_qwen3_14b_self_play_agent_population_attacker_iterative",
+        ],
+    )
+
+    # "workspace", "travel", "banking", "slack"
+    suites: tuple[str, ...] = field(
+        default_factory=lambda: (
+            "workspace",
+            # "travel",
+            # "banking",
+            # "slack",
+        )
+    )
+
+    attacks: list[str | None] = field(
+        default_factory=lambda: [
+            "adaptive_gemini_no_defense",
+            "adaptive_gemini_spotlighting",
+            "adaptive_gemini_prompt_sandwich",
+            "adaptive_gemini_pi_guard",
+            "adaptive_gpt_model_armor",
+        ]
+    )
+
+    defenses: list[str | None] = field(
+        default_factory=lambda: [
+            None,
+            # "tool_filter",
+            # "transformers_pi_detector",
+            # "spotlighting_with_delimiting",
+        ]
+    )
+
+    log_path = Path.home() / "bucket" / "agentdojo" / "iclr_rebuttal"
+
 
 def evaluate_model_sequentially():
+    eval_config = EvalConfig()
 
     # vllm server variables
     vllm_config = VllmConfig()
     os.environ["LOCAL_LLM_PORT"] = str(vllm_config.port)
 
-    log_path = Path.home() / "bucket" / "agentdojo"
-
     # if the model path has iteration checkpoints, add all of them to vllms
-    vllm_models = [
-        "pretrained/gemma-3-12b-it",
-        "pretrained/qwen3-14b",
-    ]
-    exp_base_path = "iclr_exp"
-    for exp_name in [
-        "grpo_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
-        "grpo_gemma_3_12b_it_self_play_agent_population_attacker_iterative",
-        "grpo_gemma_3_12b_it_agent_iterative",
-        "grpo_gemma_3_12b_it_art_agent_iterative",
-        "spag_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
-    ]:
+    vllm_models = eval_config.base_models
+    for exp_name in eval_config.exp_models:
         for seed in [0, 1, 2]:
             for iteration in [20, 15, 10, 5]:
-                llm_name_candidate1 = f"{exp_base_path}/{exp_name}_seed_{seed}/rl/agent/iter_{iteration}"
-                llm_name_candidate2 = f"{exp_base_path}/{exp_name}_seed_{seed}/rl/iter_{iteration}"
+                llm_name_candidate1 = f"{exp_name}_seed_{seed}/rl/agent/iter_{iteration}"
+                llm_name_candidate2 = f"{exp_name}_seed_{seed}/rl/iter_{iteration}"
                 if (vllm_config.model_path_base / llm_name_candidate1).exists():
                     vllm_models.append(llm_name_candidate1)
                     break
@@ -290,18 +329,19 @@ def evaluate_model_sequentially():
         else:
             raise ValueError(f"Unknown model name: {llm_name}")
 
-        for attack in [None, "tool_knowledge", "important_instructions"]:
-            main(
-                suites=tuple(),
-                model=ModelsEnum.LOCAL,
-                benchmark_version="v1.2.1",
-                model_id=str(vllm_config.model_path_base / llm_name),
-                attack=attack,
-                defense=None,
-                tool_delimiter="user",
-                max_workers=32,
-                logdir=log_path / exp_base_path / short_llm_name,
-            )
+        for attack in eval_config.attacks:
+            for defense in eval_config.defenses:
+                main(
+                    suites=eval_config.suites,
+                    model=ModelsEnum.LOCAL,
+                    benchmark_version="v1.2.1",
+                    model_id=str(vllm_config.model_path_base / llm_name),
+                    attack=attack,
+                    defense=defense,
+                    tool_delimiter="user",
+                    max_workers=32,
+                    logdir=eval_config.log_path / short_llm_name,
+                )
         unload_lora_modules(vllm_config.url, vllm_config.api_key, loaded_lora_module_names)
 
 
