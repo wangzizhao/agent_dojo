@@ -250,8 +250,6 @@ def evaluate_model_sequentially():
     vllm_models = [
         "pretrained/gemma-3-12b-it",
         "pretrained/qwen3-14b",
-        "imitation/gemma-3-12b-it-both",
-        "imitation/qwen3-14b-both",
     ]
     exp_base_path = "iclr_exp"
     for exp_name in [
@@ -260,18 +258,17 @@ def evaluate_model_sequentially():
         "grpo_gemma_3_12b_it_agent_iterative",
         "grpo_gemma_3_12b_it_art_agent_iterative",
         "spag_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
-        "grpo_qwen3_14b_self_play_agent_population_attacker_iterative",
     ]:
         for seed in [0, 1, 2]:
-            for iteration in [5, 10, 15, 20]:
+            for iteration in [20, 15, 10, 5]:
                 llm_name_candidate1 = f"{exp_base_path}/{exp_name}_seed_{seed}/rl/agent/iter_{iteration}"
                 llm_name_candidate2 = f"{exp_base_path}/{exp_name}_seed_{seed}/rl/iter_{iteration}"
                 if (vllm_config.model_path_base / llm_name_candidate1).exists():
                     vllm_models.append(llm_name_candidate1)
+                    break
                 elif (vllm_config.model_path_base / llm_name_candidate2).exists():
                     vllm_models.append(llm_name_candidate2)
-                else:
-                    continue
+                    break
 
     # start evaluation
     for llm_name in vllm_models:
