@@ -1,3 +1,4 @@
+import agentdojo.attacks.adaptive  # -- needed to register the attacks
 import agentdojo.attacks.baseline_attacks  # -- needed to register the attacks
 import agentdojo.attacks.dos_attacks  # -- needed to register the attacks
 import agentdojo.attacks.important_instructions_attacks  # noqa: F401  -- needed to register the attacks
