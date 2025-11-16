@@ -100,7 +100,6 @@ def show_results(log_fname: Path, suite_name: str, results: SuiteResults, show_s
     avg_utility = (sum(utility_values) / len(utility_values)) if len(utility_values) > 0 else 0.0
 
     payload: dict = {
-        "suite_name": suite_name,
         "average_utility": avg_utility,
     }
 
@@ -116,8 +115,15 @@ def show_results(log_fname: Path, suite_name: str, results: SuiteResults, show_s
                 "average_security": avg_security,
             }
         )
+    payload = {suite_name: payload}
 
     log_fname.parent.mkdir(parents=True, exist_ok=True)
+    if log_fname.exists():
+        with open(log_fname, "r", encoding="utf-8") as f:
+            existing_payload = json.load(f)
+            existing_payload.update(payload)
+            payload = existing_payload
+
     with open(log_fname, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -248,7 +254,7 @@ class EvalConfig:
     exp_models: list[str] = field(
         default_factory=lambda: [
             # "iclr_exp/grpo_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
-            # "iclr_exp/grpo_gemma_3_12b_it_self_play_agent_population_attacker_iterative",
+            "iclr_exp/grpo_gemma_3_12b_it_self_play_agent_population_attacker_iterative",
             # "iclr_exp/grpo_gemma_3_12b_it_agent_iterative",
             # "iclr_exp/grpo_gemma_3_12b_it_art_agent_iterative",
             # "iclr_exp/spag_gemma_3_12b_it_self_play_agent_iterative_attacker_iterative",
@@ -268,11 +274,10 @@ class EvalConfig:
 
     attacks: list[str | None] = field(
         default_factory=lambda: [
-            "adaptive_gemini_no_defense",
-            "adaptive_gemini_spotlighting",
-            "adaptive_gemini_prompt_sandwich",
-            "adaptive_gemini_pi_guard",
-            "adaptive_gpt_model_armor",
+            "adaptive_gemini_prompt_guard",
+            "adaptive_gemini_model_armor",
+            "adaptive_gpt_pi_guard",
+            "adaptive_gpt_prompt_guard",
         ]
     )
 
